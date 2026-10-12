@@ -1,0 +1,10 @@
+# One SSH session that arrived over the virtual machine's socket device. See virtualvm-sshd-vsock.socket.
+[Unit]
+Description=SSH session over the virtual machine's socket device (VirtualVM)
+
+[Service]
+ExecStart=-/usr/sbin/sshd -i
+StandardInput=socket
+RuntimeDirectory=sshd
+RuntimeDirectoryPreserve=yes
+RuntimeDirectoryMode=0755

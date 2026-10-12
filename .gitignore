@@ -1,0 +1,8 @@
+.DS_Store
+build/
+.build/
+.swiftpm/
+Spikes/**/build/
+*.virtualvm/
+.plans/
+.env

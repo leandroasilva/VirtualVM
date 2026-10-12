@@ -1,0 +1,14 @@
+# The VirtualVM guest agent: lets the VirtualVM app on the Mac see this system's version and addresses,
+# set its clock after the virtual machine was suspended, mount the folders shared with it and shut
+# it down. Installed by VirtualVM; to remove it, see the end of install.sh.
+[Unit]
+Description=VirtualVM guest agent
+Documentation=https://github.com/leandroasilva/VirtualVM
+
+[Service]
+ExecStart=/usr/bin/python3 -I /usr/local/lib/virtualvm/virtualvm-agent.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

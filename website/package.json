@@ -1,0 +1,17 @@
+{
+  "name": "virtualvm-website",
+  "private": true,
+  "description": "The website at virtualvm.app: a landing page, and the pages of docs/ rendered as HTML.",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs --serve"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@mermaid-js/tiny": "^12.1.0",
+    "markdown-it": "^15.0.2"
+  }
+}
