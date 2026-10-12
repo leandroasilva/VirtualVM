@@ -2,8 +2,6 @@ import Installers
 import SwiftUI
 import UniformTypeIdentifiers
 import VMCore
-import VZEngine
-import Virtualization
 
 /// What the New Virtual Machine form starts with.
 struct NewMachineRequest: Identifiable {
@@ -234,7 +232,7 @@ private struct LinuxMachineForm: View {
                         TextField("User Name", text: $userName)
                         SecureField("Password", text: $password, prompt: Text(installsSSHKey ? "Optional" : "Required"))
                         Toggle("Sign in over SSH with my key", isOn: $installsSSHKey)
-                        if VZLinuxRosettaDirectoryShare.availability == .installed {
+                        if model.supportsLinuxRosetta {
                             Toggle("Run x86-64 programs with Rosetta", isOn: $usesRosetta)
                         }
                     } header: {
@@ -649,7 +647,7 @@ private struct MacMachineForm: View {
     private func lookUpLatest() async {
         latest = .loading
         do {
-            let image = try await MacRestoreImage.latestSupported()
+            let image = try await model.latestMacRestoreImage()
             latest = .available(image)
             let remote = RemoteImage(url: image.url)
             if image.isRemote, !model.downloader.isCached(remote) {
@@ -672,7 +670,7 @@ private struct MacMachineForm: View {
 
     private func useLocalImage(at url: URL) async {
         do {
-            localImage = try await MacRestoreImage.load(from: url)
+            localImage = try await model.loadMacRestoreImage(from: url)
             localImageProblem = nil
             usesLocalImage = true
         } catch {

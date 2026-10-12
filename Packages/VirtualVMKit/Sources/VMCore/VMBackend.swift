@@ -172,6 +172,12 @@ public protocol VMBackendProvider: AnyObject {
     func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd) async throws -> any VMBackend
     /// Called after a machine's backend is gone so shared resources can be released.
     func backendDidStop(for machine: VirtualMachine)
+    /// Whether this Mac translates x86-64 Linux programs for guests, so a guest can be offered Rosetta.
+    var supportsLinuxRosetta: Bool { get }
+}
+
+extension VMBackendProvider {
+    public var supportsLinuxRosetta: Bool { false }
 }
 
 /// Something to tell the user about a specific machine: most often an error, sometimes what is left for

@@ -16,7 +16,7 @@ No Apple Developer account is needed, except for [USB devices](docs/tech/buildin
 ### Setup
 
 ```bash
-git clone https://github.com/virtualvm-app/virtualvm.git
+git clone https://github.com/leandroasilva/VirtualVM.git
 cd virtualvm
 ```
 
@@ -80,7 +80,7 @@ scripts/test.sh
 
 ## Reporting Issues
 
-- Report bugs and ideas on [GitHub Issues](https://github.com/virtualvm-app/virtualvm/issues)
+- Report bugs and ideas on [GitHub Issues](https://github.com/leandroasilva/VirtualVM/issues)
 - Search existing issues before creating a new one
 - For bugs, see [what to include](docs/user-guide/troubleshooting.md#reporting-a-bug)
 

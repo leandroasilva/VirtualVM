@@ -190,7 +190,10 @@ public struct ImageDownloader: Sendable {
 
     private func verify(_ file: URL, against image: RemoteImage) async throws {
         guard let checksumsURL = image.checksumsURL, let algorithm = image.checksumAlgorithm else {
-            throw DownloadError.checksumUnavailable(fileName: image.fileName)
+            // An image is kept only if its bytes are the published ones, or it was marked as one that
+            // proves itself another way.
+            guard image.allowsUnverifiedDownload else { throw DownloadError.checksumUnavailable(fileName: image.fileName) }
+            return
         }
         let (data, response) = try await URLSession.shared.data(from: checksumsURL)
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {

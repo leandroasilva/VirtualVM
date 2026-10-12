@@ -184,3 +184,30 @@ import VMCore
         #expect(arguments[arguments.count - 2] == "macos-27")
     }
 }
+
+@Suite struct GuestClockTests {
+    @Test func setsTheClockThroughKeyAuthOnly() {
+        let arguments = GuestClock.arguments(alias: "ubuntu-26-04", configURL: URL(fileURLWithPath: "/tmp/app/ssh_config"))
+        #expect(arguments.prefix(2) == ["-F", "/tmp/app/ssh_config"])
+        #expect(arguments.contains("BatchMode=yes"))
+        // The host comes right before the command, and the command never carries a password.
+        #expect(arguments.suffix(2) == ["ubuntu-26-04", "sudo -n hwclock --hctosys"])
+    }
+}
+
+@Suite struct AliasAndPathSafetyTests {
+    @Test(arguments: ["macos-27", "ubuntu-26-04", "a_b.c-1"])
+    func aliasesThatCanBePutInAHostBlock(alias: String) {
+        #expect(SSHConfigWriter.isValidAlias(alias))
+    }
+
+    @Test(arguments: ["", "mac; rm -rf ~", "mac host", "über-mac", "$(x)"])
+    func aliasesThatCanNot(alias: String) {
+        #expect(!SSHConfigWriter.isValidAlias(alias))
+    }
+
+    @Test func quotesOnlyWhatNeedsIt() {
+        #expect(SSHConfigWriter.quoted("/Users/me/Machines") == "/Users/me/Machines")
+        #expect(SSHConfigWriter.quoted("/Users/me/My Machines") == "\"/Users/me/My Machines\"")
+    }
+}

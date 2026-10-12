@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 import DiskTools
@@ -231,23 +232,59 @@ import VMCore
         #expect(try ImageDownloader.digest(of: url, algorithm: .sha256) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
         #expect(try ImageDownloader.digest(of: url, algorithm: .sha512).hasPrefix("ddaf35a193617aba"))
     }
+
+    /// An image without a published checksum is refused, not accepted on trust.
+    @Test func refusesImagesWithNoPublishedChecksum() async throws {
+        let payload = blockPatternedPayload()
+        let server = try FlakyFileServer(payload: payload, droppingFirstResponseAfter: payload.count)
+        defer { server.stop() }
+        let cache = FileManager.default.temporaryDirectory.appending(path: "virtualvm-downloads-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let image = RemoteImage(url: URL(string: "http://127.0.0.1:\(server.port)/image.img")!)
+
+        let downloader = ImageDownloader(cacheDirectory: cache)
+        await #expect(throws: ImageDownloader.DownloadError.self) {
+            _ = try await downloader.fetch(image) { _ in }
+        }
+        #expect(!downloader.isCached(image))
+    }
+
+    /// An image whose bytes aren't the published ones never reaches the cache.
+    @Test func refusesADigestThatDoesNotMatch() async throws {
+        let payload = blockPatternedPayload()
+        let server = try FlakyFileServer(payload: payload, droppingFirstResponseAfter: payload.count, wrongChecksum: true)
+        defer { server.stop() }
+        let cache = FileManager.default.temporaryDirectory.appending(path: "virtualvm-downloads-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: cache) }
+
+        let downloader = ImageDownloader(cacheDirectory: cache)
+        await #expect(throws: ImageDownloader.DownloadError.self) {
+            _ = try await downloader.fetch(verifiedImage(port: server.port)) { _ in }
+        }
+        #expect(!downloader.isCached(verifiedImage(port: server.port)))
+    }
 }
 
 /// A minimal HTTP server for one file that stops partway through the first request: it hangs up, the way
 /// a connection drops in the middle of a download, or sends nothing more until the client goes away, the
 /// way a download is cut short by the user. Later requests are answered in full, honoring `Range`.
+/// A request for `/SHA256SUMS` is answered with a listing for the payload, so that downloads can be
+/// verified: with `wrongChecksum`, with a digest that isn't the payload's.
 private final class FlakyFileServer: @unchecked Sendable {
     let port: UInt16
     private let descriptor: Int32
     private let lock = NSLock()
     private var ranges: [String?] = []
+    private let checksumListing: Data
 
     /// The `Range` header of every request received so far (`nil` for a request without one).
     var requestedRanges: [String?] { lock.withLock { ranges } }
 
     /// - Parameter waitsForClient: After `cutoff` bytes of the first response, keep the connection open
     ///   until the client closes it instead of hanging up.
-    init(payload: Data, droppingFirstResponseAfter cutoff: Int, waitsForClient: Bool = false) throws {
+    init(payload: Data, droppingFirstResponseAfter cutoff: Int, waitsForClient: Bool = false, wrongChecksum: Bool = false) throws {
+        let digest = wrongChecksum ? String(repeating: "0", count: 64) : SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+        checksumListing = Data("\(digest)  image.img\n".utf8)
         let descriptor = socket(AF_INET, SOCK_STREAM, 0)
         var address = sockaddr_in()
         address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
@@ -292,8 +329,14 @@ private final class FlakyFileServer: @unchecked Sendable {
         while !request.suffix(4).elementsEqual("\r\n\r\n".utf8), read(connection, &byte, 1) == 1 {
             request.append(byte)
         }
-        let range = String(decoding: request, as: UTF8.self)
-            .split(separator: "\r\n")
+        let lines = String(decoding: request, as: UTF8.self).split(separator: "\r\n")
+        // The checksum listing is a side file: answering it is not a download attempt and changes nothing.
+        if lines.first?.split(separator: " ").dropFirst().first.map(String.init)?.hasSuffix("/SHA256SUMS") == true {
+            let header = "HTTP/1.1 200 OK\r\nContent-Length: \(checksumListing.count)\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n"
+            writeAll(Data(header.utf8) + checksumListing, to: connection)
+            return false
+        }
+        let range = lines
             .first { $0.lowercased().hasPrefix("range:") }
             .map { $0.dropFirst("range:".count).trimmingCharacters(in: .whitespaces) }
         let isFirstRequest = lock.withLock {
@@ -313,6 +356,11 @@ private final class FlakyFileServer: @unchecked Sendable {
             response += isFirstRequest ? payload.prefix(cutoff) : payload
             isCutShort = isFirstRequest && cutoff < payload.count
         }
+        writeAll(response, to: connection)
+        return isCutShort
+    }
+
+    private func writeAll(_ response: Data, to connection: Int32) {
         response.withUnsafeBytes { buffer in
             var offset = 0
             while offset < buffer.count {
@@ -321,8 +369,16 @@ private final class FlakyFileServer: @unchecked Sendable {
                 offset += written
             }
         }
-        return isCutShort
     }
+}
+
+/// The server's file, as an image with a published checksum — what `fetch` needs to accept it.
+private func verifiedImage(port: UInt16) -> RemoteImage {
+    RemoteImage(
+        url: URL(string: "http://127.0.0.1:\(port)/image.img")!,
+        checksumsURL: URL(string: "http://127.0.0.1:\(port)/SHA256SUMS")!,
+        checksumAlgorithm: .sha256
+    )
 }
 
 /// Removes the system's temporary file that an unfinished download keeps its bytes in, for tests that end
@@ -357,7 +413,7 @@ private func blockPatternedPayload() -> Data {
 
         var downloader = ImageDownloader(cacheDirectory: cache)
         downloader.resumeDelay = .milliseconds(20)
-        let image = RemoteImage(url: URL(string: "http://127.0.0.1:\(server.port)/image.img")!)
+        let image = verifiedImage(port: server.port)
         let file = try await downloader.fetch(image) { _ in }
 
         #expect(try Data(contentsOf: file) == payload)
@@ -377,7 +433,7 @@ private func blockPatternedPayload() -> Data {
         defer { server.stop() }
         let cache = FileManager.default.temporaryDirectory.appending(path: "virtualvm-downloads-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: cache) }
-        let image = RemoteImage(url: URL(string: "http://127.0.0.1:\(server.port)/image.img")!)
+        let image = verifiedImage(port: server.port)
 
         let downloader = ImageDownloader(cacheDirectory: cache)
         let (arrivals, arrival) = AsyncStream<Void>.makeStream()
@@ -415,7 +471,7 @@ private func blockPatternedPayload() -> Data {
         defer { server.stop() }
         let cache = FileManager.default.temporaryDirectory.appending(path: "virtualvm-downloads-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: cache) }
-        let image = RemoteImage(url: URL(string: "http://127.0.0.1:\(server.port)/image.img")!)
+        let image = verifiedImage(port: server.port)
         let downloader = ImageDownloader(cacheDirectory: cache)
 
         for _ in 0..<20 {
@@ -452,7 +508,7 @@ private func blockPatternedPayload() -> Data {
         let cache = FileManager.default.temporaryDirectory.appending(path: "virtualvm-downloads-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: cache) }
-        let image = RemoteImage(url: URL(string: "http://127.0.0.1:\(server.port)/image.img")!)
+        let image = verifiedImage(port: server.port)
 
         let downloader = ImageDownloader(cacheDirectory: cache)
         let unfinished = downloader.unfinishedDownloadURL(for: image)
@@ -469,7 +525,7 @@ private func blockPatternedPayload() -> Data {
         let server = try FlakyFileServer(payload: payload, droppingFirstResponseAfter: 2 << 20, waitsForClient: true)
         let cache = FileManager.default.temporaryDirectory.appending(path: "virtualvm-downloads-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: cache) }
-        let image = RemoteImage(url: URL(string: "http://127.0.0.1:\(server.port)/image.img")!)
+        let image = verifiedImage(port: server.port)
 
         var downloader = ImageDownloader(cacheDirectory: cache)
         downloader.resumeDelay = .milliseconds(5)
@@ -501,7 +557,7 @@ private func blockPatternedPayload() -> Data {
         let cache = FileManager.default.temporaryDirectory.appending(path: "virtualvm-downloads-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: cache) }
-        let image = RemoteImage(url: URL(string: "http://127.0.0.1:\(server.port)/image.img")!)
+        let image = verifiedImage(port: server.port)
 
         let downloader = ImageDownloader(cacheDirectory: cache)
         let unfinished = downloader.unfinishedDownloadURL(for: image)

@@ -11,11 +11,20 @@ public struct RemoteImage: Codable, Sendable, Hashable {
     /// A `SHA256SUMS`-style file listing the expected digest of `url`'s file name.
     public var checksumsURL: URL?
     public var checksumAlgorithm: ChecksumAlgorithm?
+    /// Keep this image without a published checksum. Only for files that prove who they are another way,
+    /// like Apple's restore images, which carry Apple's own signature. Nothing else is taken on trust.
+    /// Not stored in a catalog: what a catalog can ask for is a checksum, never an exemption.
+    public var allowsUnverifiedDownload = false
 
-    public init(url: URL, checksumsURL: URL? = nil, checksumAlgorithm: ChecksumAlgorithm? = nil) {
+    public init(url: URL, checksumsURL: URL? = nil, checksumAlgorithm: ChecksumAlgorithm? = nil, allowsUnverifiedDownload: Bool = false) {
         self.url = url
         self.checksumsURL = checksumsURL
         self.checksumAlgorithm = checksumAlgorithm
+        self.allowsUnverifiedDownload = allowsUnverifiedDownload
+    }
+
+    private enum CodingKeys: CodingKey {
+        case url, checksumsURL, checksumAlgorithm
     }
 
     public var fileName: String { url.lastPathComponent }

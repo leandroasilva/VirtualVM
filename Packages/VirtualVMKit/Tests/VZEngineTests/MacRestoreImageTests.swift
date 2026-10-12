@@ -21,9 +21,14 @@ import VMCore
     }
 
     @Test func onlyMacOS27AndLaterSetThemselvesUp() {
-        #expect(image(27, 0, 0).supportsProvisioning)
-        #expect(image(28, 1, 0).supportsProvisioning)
-        #expect(!image(26, 4, 0).supportsProvisioning)
+        if #available(macOS 27.0, *) {
+            #expect(image(27, 0, 0).supportsProvisioning)
+            #expect(image(28, 1, 0).supportsProvisioning)
+            #expect(!image(26, 4, 0).supportsProvisioning)
+        } else {
+            // Provisioning is a macOS 27 API: below it nothing sets itself up, not even macOS 27 images.
+            #expect(!image(27, 0, 0).supportsProvisioning)
+        }
     }
 
     @Test func tellsDownloadsFromFiles() {
@@ -59,9 +64,16 @@ import VMCore
     }
 
     @Test func checksAccountsTheWayMacOSDoes() throws {
-        try GuestProvisioning(fullName: "Test User", userName: "tester", password: "correct horse").validateForMacOS()
-        #expect(throws: (any Error).self) {
-            try GuestProvisioning(fullName: "Test User", userName: "", password: "correct horse").validateForMacOS()
+        if #available(macOS 27.0, *) {
+            try GuestProvisioning(fullName: "Test User", userName: "tester", password: "correct horse").validateForMacOS()
+            #expect(throws: (any Error).self) {
+                try GuestProvisioning(fullName: "Test User", userName: "", password: "correct horse").validateForMacOS()
+            }
+        } else {
+            // Under macOS 26 there is no provisioning API at all, so even a good account is refused.
+            #expect(throws: (any Error).self) {
+                try GuestProvisioning(fullName: "Test User", userName: "tester", password: "correct horse").validateForMacOS()
+            }
         }
     }
 }

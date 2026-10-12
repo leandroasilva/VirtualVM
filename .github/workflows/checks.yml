@@ -3,6 +3,12 @@ name: Checks
 on:
   pull_request:
     branches: [main]
+  # The same checks again on main itself, so a merge window can't leave it broken unseen.
+  push:
+    branches: [main]
+  # And once a week at a quiet hour, for rot in the toolchain or in dependencies.
+  schedule:
+    - cron: "17 3 * * 6"
 
 concurrency:
   group: checks-${{ github.ref }}

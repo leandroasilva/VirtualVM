@@ -27,7 +27,22 @@ final class AppModel {
 
     /// `nil` if the virtual network couldn't be set up; machines then can't start.
     private(set) var networkManager: NetworkManager?
-    private(set) var backendProvider: VZBackendProvider?
+    private(set) var backendProvider: (any VMBackendProvider)?
+
+    /// Whether guests can be offered Rosetta for x86-64 Linux programs on this Mac.
+    var supportsLinuxRosetta: Bool {
+        backendProvider?.supportsLinuxRosetta == true
+    }
+
+    /// Asks Apple for the newest macOS this Mac can install as a guest.
+    func latestMacRestoreImage() async throws -> MacRestoreImage {
+        try await MacRestoreImage.latestSupported()
+    }
+
+    /// Reads the description of a local restore image file.
+    func loadMacRestoreImage(from url: URL) async throws -> MacRestoreImage {
+        try await MacRestoreImage.load(from: url)
+    }
 
     /// Machines that are still being downloaded or prepared.
     var creations: [MachineCreation] = []
@@ -226,14 +241,18 @@ final class AppModel {
     /// Moves every machine's reserved address along when the default network changes subnet.
     private func remapReservedAddresses(from previous: IPv4Subnet, to current: IPv4Subnet) {
         for machine in library.machines {
-            try? machine.updateConfiguration { configuration in
-                for index in configuration.networkInterfaces.indices {
-                    guard let address = configuration.networkInterfaces[index].ipv4Address.flatMap(IPv4Address.init),
-                          previous.contains(address)
-                    else { continue }
-                    configuration.networkInterfaces[index].ipv4Address =
-                        NetworkManager.remap(address, from: previous, to: current).description
+            do {
+                try machine.updateConfiguration { configuration in
+                    for index in configuration.networkInterfaces.indices {
+                        guard let address = configuration.networkInterfaces[index].ipv4Address.flatMap(IPv4Address.init),
+                              previous.contains(address)
+                        else { continue }
+                        configuration.networkInterfaces[index].ipv4Address =
+                            NetworkManager.remap(address, from: previous, to: current).description
+                    }
                 }
+            } catch {
+                appLog.error("Couldn't move “\(machine.name, privacy: .public)” to the network's new subnet: \(error.localizedDescription, privacy: .public)")
             }
         }
         syncSSHConfiguration()
@@ -476,10 +495,16 @@ final class AppModel {
             guard await !machine.agent.waitUntilConnected(timeout: .seconds(2)), !alias.isEmpty else { return }
             await Task.detached(priority: .utility) {
                 // The guest's network needs a moment to notice it is back.
-                for _ in 0..<5 {
-                    if (try? GuestClock.setFromHardwareClock(on: alias, configURL: configURL)) != nil { return }
+                for attempt in 0..<5 {
+                    do {
+                        try GuestClock.setFromHardwareClock(on: alias, configURL: configURL)
+                        return
+                    } catch {
+                        appLog.debug("Clock sync in “\(alias, privacy: .public)”, attempt \(attempt + 1): \(error.localizedDescription, privacy: .public)")
+                    }
                     try? await Task.sleep(for: .seconds(2))
                 }
+                appLog.warning("The clock of the guest at “\(alias, privacy: .public)” was left unsynced after five tries.")
             }.value
         }
     }

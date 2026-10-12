@@ -29,8 +29,12 @@ public final class VZBackendProvider: VMBackendProvider {
         self.usbAccessories = usbAccessories
     }
 
-    public func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd) async throws -> any VMBackend {
-        let configuration = machine.configuration
+    /// Rosetta for Linux is the framework's: the guest runs x86-64 programs when it is installed on this Mac.
+    public var supportsLinuxRosetta: Bool {
+        VZLinuxRosettaDirectoryShare.availability == .installed
+    }
+
+    public func makeBackend(for machine: VirtualMachine, console: SerialConsole.GuestEnd) async throws -> any VMBackend {        let configuration = machine.configuration
         guard configuration.engine == .virtualization else {
             throw VMError.unsupportedEngine(configuration.engine)
         }

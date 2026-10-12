@@ -32,10 +32,10 @@ Windows guests are planned.
 VirtualVM runs on macOS 26 or newer, on Apple silicon.
 
 ```bash
-brew install --cask virtualvm-app/tap/virtualvm
+brew install --cask leandroasilva/tap/virtualvm
 ```
 
-Or download the DMG from the [latest release](https://github.com/virtualvm-app/virtualvm/releases/latest).
+Or download the DMG from the [latest release](https://github.com/leandroasilva/VirtualVM/releases/latest).
 
 See [Getting started](docs/user-guide/getting-started.md) for your first virtual machine, the `virtualvm` command, and beta builds.
 

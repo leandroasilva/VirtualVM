@@ -232,7 +232,8 @@ extension AppModel {
             image = try await MacRestoreImage.latestSupported()
         }
         if image.isRemote {
-            let file = try await download(RemoteImage(url: image.url), named: image.productName, creation: creation)
+            // Apple publishes no checksum for its restore images; the image's own signature is checked when it is loaded.
+            let file = try await download(RemoteImage(url: image.url, allowsUnverifiedDownload: true), named: image.productName, creation: creation)
             try Task.checkCancellation()
             creation.update("Checking \(image.productName)…")
             // From here on, go by what the downloaded file says about itself.
@@ -325,9 +326,16 @@ extension AppModel {
                    await Reachability.canConnect(to: address, port: machine.configuration.ssh.port) {
                     // Refused sign-ins are expected until the guest has finished creating the account.
                     let isInstalled = await Task.detached {
-                        (try? SSHKeyInstaller.install(
-                            publicKey: keyPair.publicKey, on: alias, configURL: configURL, password: account.password
-                        )) != nil
+                        do {
+                            try SSHKeyInstaller.install(
+                                publicKey: keyPair.publicKey, on: alias, configURL: configURL, password: account.password
+                            )
+                            return true
+                        } catch {
+                            // Refused sign-ins are expected until the guest has finished creating the account.
+                            appLog.debug("SSH key attempt on “\(alias, privacy: .public)” didn't take: \(error.localizedDescription, privacy: .public)")
+                            return false
+                        }
                     }.value
                     if isInstalled {
                         await installGuestTools(afterSetupOf: machine, password: account.password)
@@ -359,10 +367,20 @@ extension AppModel {
             let alias = machine.configuration.ssh.alias
             let configURL = sshWriter.generatedConfigURL
             let isSet = await Task.detached {
-                (try? GuestTimeZone.set(on: alias, configURL: configURL, password: password)) != nil
+                do {
+                    try GuestTimeZone.set(on: alias, configURL: configURL, password: password)
+                    return true
+                } catch {
+                    appLog.debug("Time zone setup on “\(alias, privacy: .public)” didn't take: \(error.localizedDescription, privacy: .public)")
+                    return false
+                }
             }.value
             if isSet {
-                try? machine.updateConfiguration { $0.installation.hasHostTimeZone = true }
+                do {
+                    try machine.updateConfiguration { $0.installation.hasHostTimeZone = true }
+                } catch {
+                    appLog.error("Couldn't record the time zone of “\(machine.name, privacy: .public)”: \(error.localizedDescription, privacy: .public)")
+                }
             }
             var reason = error.localizedDescription
             if let failure = error as? ProcessRunner.Failure, let complaint = LinuxGuestAgent.installerComplaint(in: failure) {
