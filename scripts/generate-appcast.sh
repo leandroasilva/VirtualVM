@@ -40,7 +40,7 @@ cat > "$item" <<ITEM
       <pubDate>$(LC_ALL=C date -u "+%a, %d %b %Y %H:%M:%S %z")</pubDate>$channel_element
       <sparkle:version>$build_number</sparkle:version>
       <sparkle:shortVersionString>$version</sparkle:shortVersionString>
-      <sparkle:minimumSystemVersion>27.0</sparkle:minimumSystemVersion>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
       <sparkle:fullReleaseNotesLink>$repository/releases/tag/$tag</sparkle:fullReleaseNotesLink>
       <enclosure url="${DOWNLOAD_URL_PREFIX:-$repository/releases/download/$tag/}${image:t}" sparkle:edSignature="$signature" length="$(stat -f%z "$image")" type="application/octet-stream" />
     </item>
