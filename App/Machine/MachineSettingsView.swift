@@ -11,6 +11,12 @@ struct MachineSettingsView: View {
     @State private var name = ""
     @State private var sshUser = ""
     @State private var isResizingDisk = false
+    /// The processor and memory controls work on these and persist at the end of a burst of changes:
+    /// dragging the slider would otherwise write the bundle on every tick.
+    @State private var cpuCount = 1
+    @State private var memoryGiB = 1.0
+    @State private var pendingHardware: ((inout VMConfiguration) -> Void)?
+    @State private var hardwareCommitTask: Task<Void, Never>?
 
     private var configuration: VMConfiguration { machine.configuration }
     private var isActive: Bool { machine.state != .stopped }
@@ -60,6 +66,8 @@ struct MachineSettingsView: View {
         .onAppear {
             name = configuration.name
             sshUser = configuration.ssh.user
+            cpuCount = configuration.cpuCount
+            memoryGiB = Double(configuration.memorySize / HostResources.gibibyte)
         }
         // In a window of their own the settings can be closed without Done. What was typed is kept all
         // the same.
@@ -87,15 +95,15 @@ struct MachineSettingsView: View {
 
     private var resourcesSection: some View {
         Section("Processor and Memory") {
-            Stepper(value: binding(\.cpuCount), in: 1...HostResources.cpuCount) {
-                LabeledContent("Processors", value: "\(configuration.cpuCount)")
+            Stepper(value: cpuBinding, in: 1...HostResources.cpuCount) {
+                LabeledContent("Processors", value: "\(cpuCount)")
             }
             LabeledContent("Memory") {
                 HStack {
                     Slider(value: memoryBinding, in: 1...Double(HostResources.maximumGuestMemorySize / HostResources.gibibyte), step: 1)
                         .accessibilityLabel("Memory")
-                        .accessibilityValue(Formatting.bytes(configuration.memorySize))
-                    Text(Formatting.bytes(configuration.memorySize))
+                        .accessibilityValue(Formatting.bytes(memoryBytes))
+                    Text(Formatting.bytes(memoryBytes))
                         .monospacedDigit()
                         .frame(width: 56, alignment: .trailing)
                 }
@@ -232,11 +240,55 @@ struct MachineSettingsView: View {
 
     // MARK: Editing
 
+    private var memoryBytes: UInt64 { UInt64(memoryGiB) * HostResources.gibibyte }
+
+    private var cpuBinding: Binding<Int> {
+        Binding(
+            get: { cpuCount },
+            set: { newValue in
+                cpuCount = newValue
+                scheduleHardwareCommit { $0.cpuCount = newValue }
+            }
+        )
+    }
+
     private var memoryBinding: Binding<Double> {
         Binding(
-            get: { Double(configuration.memorySize / HostResources.gibibyte) },
-            set: { newValue in update { $0.memorySize = UInt64(newValue) * HostResources.gibibyte } }
+            get: { memoryGiB },
+            set: { newValue in
+                memoryGiB = newValue
+                scheduleHardwareCommit { $0.memorySize = UInt64(newValue) * HostResources.gibibyte }
+            }
         )
+    }
+
+    /// Persists a hardware change once the user stops making them, so that a slider drag or a held
+    /// stepper writes the bundle once instead of on every tick. Changes made in one burst are composed:
+    /// a stepper tick followed by a slider tick commits both.
+    private func scheduleHardwareCommit(_ body: @escaping (inout VMConfiguration) -> Void) {
+        let previous = pendingHardware
+        pendingHardware = { updated in
+            previous?(&updated)
+            body(&updated)
+        }
+        hardwareCommitTask?.cancel()
+        hardwareCommitTask = Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            flushPendingHardware()
+        }
+    }
+
+    private func flushPendingHardware() {
+        hardwareCommitTask?.cancel()
+        hardwareCommitTask = nil
+        guard let body = pendingHardware else { return }
+        pendingHardware = nil
+        update(body)
+        // Bring the mirrors back to what the machine actually holds: what wasn't saved, perhaps for a
+        // bundle write that failed, shows as what is saved rather than as unsaved.
+        cpuCount = machine.configuration.cpuCount
+        memoryGiB = Double(machine.configuration.memorySize / HostResources.gibibyte)
     }
 
     private func binding<Value>(_ keyPath: WritableKeyPath<VMConfiguration, Value>) -> Binding<Value> {
@@ -247,6 +299,7 @@ struct MachineSettingsView: View {
     }
 
     private func commitTextFields() {
+        flushPendingHardware()
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedUser = sshUser.trimmingCharacters(in: .whitespacesAndNewlines)
         update { configuration in

@@ -46,6 +46,8 @@ final class AppModel {
 
     /// Machines that are still being downloaded or prepared.
     var creations: [MachineCreation] = []
+    /// Whether ``VMLibrary/load()`` has finished; the app draws before the machines are read in.
+    private(set) var isLibraryLoaded = false
     /// Machines whose own window is open; their errors are shown there instead of in the menu bar panel.
     var openMachineWindows: Set<UUID> = []
     /// Whether the app's item is in the menu bar. It always is: with no window open the item is all there
@@ -121,14 +123,24 @@ final class AppModel {
         usbAccessories.onDisconnect = { [weak self] id in self?.usb.deviceDidDisconnect(id) }
         // A guest that says where it is doesn't have to wait for the next round to be believed.
         library.onGuestAddressesChange = { [weak self] _ in self?.refreshAddressesSoon() }
-        // Whatever was being created when the app last quit can't be finished.
+        // Whatever was being created when the app last quit can't be finished, and opening the library is
+        // disk work: it happens in ``bootstrap()``, off the initializer, so the app draws right away.
+        startUSBDevices()
+        Task { await bootstrap() }
+    }
+
+    /// Loads the library and starts the services that act on its machines.
+    private func bootstrap() async {
+        MachineNotifications.requestAuthorization()
         library.removeStagedBundles()
-        library.load()
+        await library.load()
+        isLibraryLoaded = true
         // If the host has joined a network that collides with ours, move before any machine starts.
         networkManager?.relocateDefaultSubnetIfNeeded()
         startControlServer()
         startAddressMonitor()
-        startUSBDevices()
+        // The menu bar item asks for this too; whoever is ready second gets the one turn.
+        offerFirstMachine()
     }
 
     /// Asks macOS which USB devices it has given the app, in a copy that is signed to be given any.

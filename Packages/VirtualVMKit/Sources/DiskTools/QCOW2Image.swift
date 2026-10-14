@@ -39,8 +39,9 @@ public struct QCOW2Image: Sendable {
     public static func isQCOW2(at url: URL) -> Bool {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
         defer { try? handle.close() }
-        guard let data = try? handle.read(upToCount: 4), data.count == 4 else { return false }
-        return data.readBigEndian(UInt32.self, at: 0) == magic
+        guard let data = try? handle.read(upToCount: 4), data.count == 4,
+              let value = try? data.readBigEndian(UInt32.self, at: 0) else { return false }
+        return value == magic
     }
 
     public init(url: URL) throws {
@@ -55,30 +56,30 @@ public struct QCOW2Image: Sendable {
         guard let header = try? handle.read(upToCount: 112), header.count >= 72 else {
             throw FormatError.notQCOW2
         }
-        guard header.readBigEndian(UInt32.self, at: 0) == Self.magic else {
+        guard try header.readBigEndian(UInt32.self, at: 0) == Self.magic else {
             throw FormatError.notQCOW2
         }
-        let version = header.readBigEndian(UInt32.self, at: 4)
+        let version = try header.readBigEndian(UInt32.self, at: 4)
         guard version == 2 || version == 3 else {
             throw FormatError.unsupportedVersion(version)
         }
-        guard header.readBigEndian(UInt64.self, at: 8) == 0 else {
+        guard try header.readBigEndian(UInt64.self, at: 8) == 0 else {
             throw FormatError.unsupportedFeature("a backing file")
         }
-        let clusterBits = Int(header.readBigEndian(UInt32.self, at: 20))
+        let clusterBits = Int(try header.readBigEndian(UInt32.self, at: 20))
         guard (9...21).contains(clusterBits) else {
             throw FormatError.corrupt("invalid cluster size")
         }
-        guard header.readBigEndian(UInt32.self, at: 32) == 0 else {
+        guard try header.readBigEndian(UInt32.self, at: 32) == 0 else {
             throw FormatError.unsupportedFeature("encryption")
         }
         if version == 3 {
             guard header.count >= 104 else { throw FormatError.corrupt("truncated header") }
-            let incompatible = header.readBigEndian(UInt64.self, at: 72)
+            let incompatible = try header.readBigEndian(UInt64.self, at: 72)
             if incompatible & (1 << 2) != 0 { throw FormatError.unsupportedFeature("an external data file") }
             if incompatible & (1 << 4) != 0 { throw FormatError.unsupportedFeature("extended L2 entries") }
             if incompatible & (1 << 3) != 0 {
-                let headerLength = Int(header.readBigEndian(UInt32.self, at: 100))
+                let headerLength = Int(try header.readBigEndian(UInt32.self, at: 100))
                 let compressionType = headerLength > 104 && header.count > 104 ? header[header.startIndex + 104] : 0
                 if compressionType != 0 { throw FormatError.unsupportedFeature("zstd compression") }
             }
@@ -86,9 +87,21 @@ public struct QCOW2Image: Sendable {
             if incompatible & ~known != 0 { throw FormatError.unsupportedFeature("an unknown incompatible feature") }
         }
         self.clusterBits = clusterBits
-        self.virtualSize = header.readBigEndian(UInt64.self, at: 24)
-        self.l1Size = Int(header.readBigEndian(UInt32.self, at: 36))
-        self.l1TableOffset = header.readBigEndian(UInt64.self, at: 40)
+        let virtualSize = try header.readBigEndian(UInt64.self, at: 24)
+        let l1Size = Int(try header.readBigEndian(UInt32.self, at: 36))
+        self.virtualSize = virtualSize
+        self.l1Size = l1Size
+        self.l1TableOffset = try header.readBigEndian(UInt64.self, at: 40)
+
+        // A table of claimed entries has to be read into memory whole. QEMU's own images size the L1 table
+        // to cover the virtual disk, padded to fill a cluster at most; anything far beyond that is damage
+        // or a hostile file, and reading it would allocate without bound.
+        let clusterSize = 1 << clusterBits
+        let bytesCoveredPerL1Entry = UInt64(clusterSize) * UInt64(clusterSize / 8)
+        let neededL1 = virtualSize == 0 ? 0 : Int((virtualSize - 1) / bytesCoveredPerL1Entry + 1)
+        guard l1Size >= neededL1, l1Size <= neededL1 + clusterSize / 8 else {
+            throw FormatError.corrupt("L1 table size doesn't match the virtual disk")
+        }
     }
 
     /// Writes the image's contents as a sparse raw image at `destination`.
@@ -127,12 +140,12 @@ public struct QCOW2Image: Sendable {
 
         for l1Index in 0..<l1Size {
             progress?(Double(l1Index) / Double(max(l1Size, 1)))
-            let l2Offset = l1Table.readBigEndian(UInt64.self, at: l1Index * 8) & offsetMask
+            let l2Offset = try l1Table.readBigEndian(UInt64.self, at: l1Index * 8) & offsetMask
             guard l2Offset != 0 else { continue }
             let l2Table = try Self.read(source, offset: l2Offset, count: clusterSize)
 
             for l2Index in 0..<l2EntryCount {
-                let entry = l2Table.readBigEndian(UInt64.self, at: l2Index * 8)
+                let entry = try l2Table.readBigEndian(UInt64.self, at: l2Index * 8)
                 guard entry != 0 else { continue }
                 let guestOffset = (UInt64(l1Index) * UInt64(l2EntryCount) + UInt64(l2Index)) << UInt64(clusterBits)
                 guard guestOffset < virtualSize else { continue }
@@ -147,11 +160,15 @@ public struct QCOW2Image: Sendable {
                     }
                     let readCount = compressed.withUnsafeMutableBytes { pread(source, $0.baseAddress, compressedLength, off_t(hostOffset)) }
                     guard readCount > 0 else { throw FormatError.corrupt("unreadable compressed cluster") }
-                    let decoded = cluster.withUnsafeMutableBufferPointer { destinationBuffer in
-                        compressed.withUnsafeBufferPointer { sourceBuffer in
-                            compression_decode_buffer(
-                                destinationBuffer.baseAddress!, clusterSize,
-                                sourceBuffer.baseAddress!, readCount,
+                    let decoded = try cluster.withUnsafeMutableBytes { destination throws -> Int in
+                        guard let destinationBase = destination.baseAddress else {
+                            throw FormatError.corrupt("empty cluster buffer")
+                        }
+                        return compressed.withUnsafeBytes { sourceBuffer in
+                            guard let sourceBase = sourceBuffer.baseAddress else { return 0 }
+                            return compression_decode_buffer(
+                                destinationBase, clusterSize,
+                                sourceBase, readCount,
                                 nil, COMPRESSION_ZLIB
                             )
                         }
@@ -188,10 +205,16 @@ public struct QCOW2Image: Sendable {
 }
 
 extension Data {
-    func readBigEndian<T: FixedWidthInteger>(_ type: T.Type, at offset: Int) -> T {
-        var value: T = 0
+    /// A big-endian integer at `offset`, or a thrown error when the data is too short for it.
+    ///
+    /// Every read goes through this because a damaged image can claim tables of any size; out-of-range
+    /// reads are expected input, so they must fail rather than trap.
+    func readBigEndian<T: FixedWidthInteger>(_ type: T.Type, at offset: Int) throws -> T {
         let size = MemoryLayout<T>.size
-        precondition(offset + size <= count, "read past end of data")
+        guard offset >= 0, offset + size <= count else {
+            throw QCOW2Image.FormatError.corrupt("read past end of data")
+        }
+        var value: T = 0
         _ = Swift.withUnsafeMutableBytes(of: &value) { destination in
             copyBytes(to: destination, from: (startIndex + offset)..<(startIndex + offset + size))
         }

@@ -293,15 +293,15 @@ private final class FakeProvider: VMBackendProvider {
         VMConfiguration(name: name, os: GuestOS(family: .linux), cpuCount: 2, memorySize: 4 << 30, disks: [])
     }
 
-    @Test func stagedBundlesJoinTheLibraryUnderTheMachineName() throws {
+    @Test func stagedBundlesJoinTheLibraryUnderTheMachineName() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: "virtualvm-tests-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
         let library = VMLibrary(rootDirectory: root)
-        library.load()
+        await library.load()
 
         let staged = try VMBundle.create(at: library.makeStagingBundleURL(), configuration: configuration(named: "Web Server"))
         // Not a machine yet, even if the library is reloaded while it is being put together.
-        library.load()
+        await library.load()
         #expect(library.machines.isEmpty)
 
         let machine = try library.add(staged: staged)
@@ -315,16 +315,16 @@ private final class FakeProvider: VMBackendProvider {
         #expect(try library.add(staged: twin).bundle.url.lastPathComponent == "Web Server 2.virtualvm")
     }
 
-    @Test func leftoversOfUnfinishedCreationsAreRemoved() throws {
+    @Test func leftoversOfUnfinishedCreationsAreRemoved() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: "virtualvm-tests-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
         let library = VMLibrary(rootDirectory: root)
-        library.load()
+        await library.load()
         let finished = try library.add(staged: VMBundle.create(at: library.makeStagingBundleURL(), configuration: configuration(named: "Done")))
         let abandoned = try VMBundle.create(at: library.makeStagingBundleURL(), configuration: configuration(named: "Half"))
 
         library.removeStagedBundles()
-        library.load()
+        await library.load()
         #expect(!FileManager.default.fileExists(atPath: abandoned.url.path))
         #expect(FileManager.default.fileExists(atPath: finished.bundle.url.path))
         #expect(library.machines.map(\.name) == ["Done"])

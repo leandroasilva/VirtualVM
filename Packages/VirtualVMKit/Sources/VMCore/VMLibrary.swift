@@ -53,44 +53,78 @@ public final class VMLibrary {
     // MARK: Loading
 
     /// Loads the index and picks up any bundle found in the machines directory.
-    public func load() {
+    ///
+    /// Opening the bundles is disk work that adds up with the size of the library, so it happens away
+    /// from the main thread; the machines appear once they are read.
+    public func load() async {
         let fileManager = FileManager.default
         try? fileManager.createDirectory(at: machinesDirectory, withIntermediateDirectories: true)
 
-        var urls: [URL] = []
+        var indexURLs: [URL] = []
         if let data = try? Data(contentsOf: indexURL),
            let index = try? JSONDecoder().decode(Index.self, from: data) {
-            urls = index.bundles.map { URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL }
+            indexURLs = index.bundles.map { URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL }
         }
-        let discovered = (try? fileManager.contentsOfDirectory(at: machinesDirectory, includingPropertiesForKeys: nil)) ?? []
-        for url in discovered.sorted(by: { $0.path < $1.path }) where url.pathExtension == VMBundle.pathExtension {
-            let standardized = url.standardizedFileURL
-            if !urls.contains(standardized) {
-                urls.append(standardized)
-            }
-        }
+        let known = Set(machines.map(\.bundle.url))
+        let directory = machinesDirectory
+        let index = indexURLs
 
+        let listing: Listing = await Task.detached(priority: .userInitiated) {
+            var urls = index
+            let discovered = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+            for url in discovered.sorted(by: { $0.path < $1.path }) where url.pathExtension == VMBundle.pathExtension {
+                let standardized = url.standardizedFileURL
+                if !urls.contains(standardized) {
+                    urls.append(standardized)
+                }
+            }
+            var listing = Listing(urls: urls)
+            for url in urls {
+                guard !known.contains(url), FileManager.default.fileExists(atPath: url.path) else { continue }
+                listing.scans.append((url, Result { try VirtualMachine.scan(VMBundle(url: url)) }))
+            }
+            return listing
+        }.value
+
+        let scans = Dictionary(listing.scans, uniquingKeysWith: { first, _ in first })
         var loaded: [VirtualMachine] = []
         var failures: [URL: String] = [:]
-        for url in urls {
+        for url in listing.urls {
             if let existing = machines.first(where: { $0.bundle.url == url }) {
                 loaded.append(existing)
                 continue
             }
-            guard fileManager.fileExists(atPath: url.path) else { continue }
-            do {
-                let machine = try VirtualMachine(bundle: VMBundle(url: url))
+            guard let scan = scans[url] else { continue }
+            switch scan {
+            case .success(let bundleScan):
+                // Gone from disk between the scan and now — deleted, or moved to the Trash, while the rest
+                // of the library was being read. It isn't a machine any more.
+                guard fileManager.fileExists(atPath: url.path) else { continue }
+                let machine = VirtualMachine(bundle: VMBundle(url: url), scan: bundleScan)
                 guard !loaded.contains(where: { $0.id == machine.id }) else { continue }
                 adopt(machine)
                 loaded.append(machine)
-            } catch {
+            case .failure(let error):
                 failures[url] = error.localizedDescription
+            }
+        }
+        // Ones joined while the disk was being read: the listing on the background task doesn't know
+        // them, but they are in the library, and it would be a shame to drop them.
+        for machine in machines where !listing.urls.contains(machine.bundle.url) {
+            if !loaded.contains(where: { $0.id == machine.id }) {
+                loaded.append(machine)
             }
         }
         machines = loaded
         unreadableBundles = failures
         saveIndex()
         onChange?()
+    }
+
+    /// The machine files found on disk and what opening each of them said, gathered off the main thread.
+    private nonisolated struct Listing: Sendable {
+        var urls: [URL]
+        var scans: [(URL, Result<VirtualMachine.BundleScan, any Error>)] = []
     }
 
     public func machine(id: UUID) -> VirtualMachine? {

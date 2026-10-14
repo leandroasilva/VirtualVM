@@ -125,6 +125,7 @@ extension AppModel {
             do {
                 let machine = try await operation(creation)
                 creations.removeAll { $0.id == creation.id }
+                MachineNotifications.creationFinished(machine)
                 creation.onFinish?(.success(machine))
                 onReady(machine)
             } catch {
@@ -134,6 +135,7 @@ extension AppModel {
                 } else {
                     creation.fraction = nil
                     creation.errorMessage = error.localizedDescription
+                    MachineNotifications.creationFailed(name: creation.name, reason: error.localizedDescription)
                 }
                 creation.onFinish?(.failure(error))
             }

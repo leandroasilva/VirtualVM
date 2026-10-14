@@ -114,6 +114,50 @@ private extension Data {
         try QCOW2Fixture.make(at: backed, backingFileOffset: 200)
         #expect(throws: QCOW2Image.FormatError.unsupportedFeature("a backing file")) { try QCOW2Image(url: backed) }
     }
+
+    /// A damaged or hostile image must be refused with an error, never a trap in the reading code.
+    @Test func rejectsDamageWithoutTrapping() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let good = directory.appending(path: "good.qcow2")
+        try QCOW2Fixture.make(at: good)
+
+        // An L1 size of 4 GB entries, where the virtual disk needs one.
+        var oversizedL1 = try Data(contentsOf: good)
+        oversizedL1.replaceSubrange(36..<40, with: Data([0xFF, 0xFF, 0xFF, 0xFF]))
+        let oversizedURL = directory.appending(path: "oversized.qcow2")
+        try oversizedL1.write(to: oversizedURL)
+        #expect(throws: QCOW2Image.FormatError.corrupt("L1 table size doesn't match the virtual disk")) {
+            try QCOW2Image(url: oversizedURL)
+        }
+
+        // A version 3 header cut short of the fields at offset 104.
+        let truncatedURL = directory.appending(path: "truncated.qcow2")
+        try Data(oversizedL1.prefix(80)).write(to: truncatedURL)
+        #expect(throws: QCOW2Image.FormatError.corrupt("truncated header")) {
+            try QCOW2Image(url: truncatedURL)
+        }
+
+        // Tables that run past the end of the file fail the read, not the process.
+        let cutTablesURL = directory.appending(path: "cut-tables.qcow2")
+        try Data(try Data(contentsOf: good).prefix(QCOW2Fixture.clusterSize * 2 + 4)).write(to: cutTablesURL)
+        let image = try QCOW2Image(url: cutTablesURL)
+        let destination = directory.appending(path: "cut.raw")
+        #expect(throws: QCOW2Image.FormatError.corrupt("truncated metadata table")) {
+            try image.convertToRaw(at: destination)
+        }
+    }
+
+    @Test func bigEndianReadsFailPastTheEndOfData() throws {
+        let data = Data([0x01, 0x02])
+        #expect(try data.readBigEndian(UInt16.self, at: 0) == 0x0102)
+        #expect(throws: QCOW2Image.FormatError.corrupt("read past end of data")) {
+            _ = try data.readBigEndian(UInt64.self, at: 4)
+        }
+        #expect(throws: QCOW2Image.FormatError.corrupt("read past end of data")) {
+            _ = try data.readBigEndian(UInt16.self, at: 1)
+        }
+    }
 }
 
 @Suite struct DiskServiceTests {

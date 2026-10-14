@@ -84,16 +84,36 @@ public final class VirtualMachine: Identifiable {
     @ObservationIgnored private var isLookingAfterGuest = false
     @ObservationIgnored private var shouldLookAfterGuestAgain = false
 
-    public init(bundle: VMBundle, configuration: VMConfiguration) {
-        self.id = configuration.id
-        self.bundle = bundle
-        self.console = SerialConsole(logURL: bundle.consoleLogURL)
-        self.configuration = configuration
+    /// What a bundle holds on disk, collected without the main thread: opening a library of machines is
+    /// disk work, and doing it on the main actor makes the app stutter at launch.
+    public nonisolated struct BundleScan: Sendable {
+        public let configuration: VMConfiguration
+        public let hasSavedState: Bool
+        public let snapshots: [VMSnapshot]
+        public let allocatedDiskSize: UInt64
+    }
+
+    /// Reads everything a machine needs to know about its bundle, off the main actor.
+    public static nonisolated func scan(_ bundle: VMBundle) throws -> BundleScan {
         // Copies left by a revert that was cut short. The files they were meant to replace are intact.
         bundle.removeRestoreLeftovers()
-        self.state = bundle.hasSavedState ? .suspended : .stopped
-        self.snapshots = bundle.loadSnapshots()
-        refreshDiskUsage()
+        let configuration = try bundle.loadConfiguration()
+        return BundleScan(
+            configuration: configuration,
+            hasSavedState: bundle.hasSavedState,
+            snapshots: bundle.loadSnapshots(),
+            allocatedDiskSize: bundle.allocatedSize(of: configuration.disks.filter { !$0.readOnly })
+        )
+    }
+
+    public init(bundle: VMBundle, scan: BundleScan) {
+        self.id = scan.configuration.id
+        self.bundle = bundle
+        self.console = SerialConsole(logURL: bundle.consoleLogURL)
+        self.configuration = scan.configuration
+        self.state = scan.hasSavedState ? .suspended : .stopped
+        self.snapshots = scan.snapshots
+        self.allocatedDiskSize = scan.allocatedDiskSize
         agent.onConnect = { [weak self] hello in self?.agentDidConnect(hello) }
         agent.onAddressesChange = { [weak self] in
             guard let self else { return }
@@ -116,7 +136,7 @@ public final class VirtualMachine: Identifiable {
     }
 
     public convenience init(bundle: VMBundle) throws {
-        try self.init(bundle: bundle, configuration: bundle.loadConfiguration())
+        try self.init(bundle: bundle, scan: Self.scan(bundle))
     }
 
     public var name: String { configuration.name }

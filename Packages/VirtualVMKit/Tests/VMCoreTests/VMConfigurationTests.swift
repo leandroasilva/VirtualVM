@@ -121,11 +121,11 @@ import Testing
 }
 
 @MainActor @Suite struct VMLibraryTests {
-    @Test func createsListsAndRemovesMachines() throws {
+    @Test func createsListsAndRemovesMachines() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: "virtualvm-library-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
         let library = VMLibrary(rootDirectory: root)
-        library.load()
+        await library.load()
         #expect(library.machines.isEmpty)
 
         let configuration = VMConfiguration(name: "Web Server", os: GuestOS(family: .linux), cpuCount: 2, memorySize: 4 << 30, disks: [])
@@ -137,7 +137,7 @@ import Testing
 
         // A fresh library instance finds the machine again through the index.
         let reloaded = VMLibrary(rootDirectory: root)
-        reloaded.load()
+        await reloaded.load()
         #expect(reloaded.machines.map(\.id) == [configuration.id])
 
         try machine.updateConfiguration { $0.cpuCount = 6 }
